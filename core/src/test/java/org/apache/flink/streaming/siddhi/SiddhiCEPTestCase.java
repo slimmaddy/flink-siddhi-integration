@@ -60,7 +60,7 @@ import static org.junit.Assert.assertTrue;
 /**
  * Flink-siddhi library integration test cases
  */
-public class SiddhiCEPITCase extends AbstractTestBase implements Serializable {
+public class SiddhiCEPTestCase extends AbstractTestBase implements Serializable {
     @Rule
     public transient TemporaryFolder tempFolder = new TemporaryFolder();
 

@@ -6,12 +6,12 @@ import org.apache.flink.api.common.typeinfo.{BasicTypeInfo, TypeInformation}
 import org.apache.flink.api.java.typeutils.RowTypeInfo
 import org.apache.flink.api.java.utils.ParameterTool
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
-import org.apache.flink.streaming.api.scala.{DataStream => ScalaStream}
-import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaConsumer010, FlinkKafkaProducer010}
 import org.apache.flink.streaming.siddhi.SiddhiCEP
-import org.apache.flink.streaming.siddhi.control.ControlEventSchema
+import org.apache.flink.streaming.siddhi.control.{ControlEvent, ControlEventSchema}
 import org.apache.flink.streaming.util.serialization.SimpleStringSchema
 import org.apache.flink.formats.json.JsonRowDeserializationSchema
+import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaConsumer, FlinkKafkaProducer}
+import org.apache.flink.types.Row
 
 import java.util
 
@@ -31,7 +31,6 @@ object CEPPipeline {
     }
 
     val env = StreamExecutionEnvironment.getExecutionEnvironment
-    env.getConfig.disableSysoutLogging
     env.getConfig.setRestartStrategy(RestartStrategies.fixedDelayRestart(4, 10000))
     // create a checkpoint every 5 seconds
     env.enableCheckpointing(5000)
@@ -47,14 +46,18 @@ object CEPPipeline {
     )
 
     // create a Kafka streaming source consumer for Kafka 0.10.x
-    val dataStream = env.addSource(new FlinkKafkaConsumer010(params.getRequired("input-topic"),
-      new JsonRowDeserializationSchema(new RowTypeInfo(dataSchemaTypes, dataSchemaFields)), params.getProperties))
+    val inputTypeDeserializer = new JsonRowDeserializationSchema.Builder(new RowTypeInfo(dataSchemaTypes, dataSchemaFields))
+      .failOnMissingField()
+      .build()
 
-    val controlStream = env.addSource(new FlinkKafkaConsumer010(params.getRequired("control-topic"),
-      new ControlEventSchema(), params.getProperties))
+    val inputSource = new FlinkKafkaConsumer[Row](params.getRequired("input-topic"), inputTypeDeserializer, params.getProperties)
+    val dataStream = env.addSource(inputSource)
+
+    val controlSource = new FlinkKafkaConsumer[ControlEvent](params.getRequired("control-topic"), new ControlEventSchema(), params.getProperties)
+    val controlStream = env.addSource(controlSource)
 
     // create a Kafka producer for Kafka 0.10.x
-    val kafkaProducer = new FlinkKafkaProducer010(params.getRequired("output-topic"),
+    val kafkaProducer = new FlinkKafkaProducer[String](params.getRequired("output-topic"),
       new SimpleStringSchema, params.getProperties)
 
     dataStream.print()

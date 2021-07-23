@@ -19,6 +19,7 @@ package org.apache.flink.streaming.siddhi.router;
 
 import org.apache.flink.api.common.functions.Partitioner;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.runtime.io.network.api.writer.SubtaskStateMapper;
 import org.apache.flink.runtime.plugable.SerializationDelegate;
 import org.apache.flink.streaming.runtime.partitioner.StreamPartitioner;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
@@ -37,6 +38,11 @@ public class DynamicPartitioner extends StreamPartitioner<Tuple2<StreamRoute, Ob
     @Override
     public StreamPartitioner<Tuple2<StreamRoute, Object>> copy() {
         return new DynamicPartitioner();
+    }
+
+    @Override
+    public SubtaskStateMapper getDownstreamSubtaskStateMapper() {
+        return SubtaskStateMapper.FULL;
     }
 
     @Override

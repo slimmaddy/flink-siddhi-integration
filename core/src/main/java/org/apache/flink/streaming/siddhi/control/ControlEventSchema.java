@@ -19,10 +19,11 @@ package org.apache.flink.streaming.siddhi.control;
 
 import java.io.IOException;
 
+import org.apache.flink.api.common.serialization.DeserializationSchema;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
-import org.apache.flink.streaming.util.serialization.AbstractDeserializationSchema;
 
-public class ControlEventSchema extends AbstractDeserializationSchema<ControlEvent> {
+public class ControlEventSchema implements DeserializationSchema<ControlEvent> {
 
     private ObjectMapper mapper;
 
@@ -38,5 +39,15 @@ public class ControlEventSchema extends AbstractDeserializationSchema<ControlEve
         } catch (ClassNotFoundException e) {
             throw new IOException(e);
         }
+    }
+
+    @Override
+    public boolean isEndOfStream(ControlEvent controlEvent) {
+        return false;
+    }
+
+    @Override
+    public TypeInformation<ControlEvent> getProducedType() {
+        return TypeInformation.of(ControlEvent.class);
     }
 }

@@ -17,19 +17,31 @@
 
 package org.apache.flink.streaming.siddhi.router;
 
+import org.apache.flink.api.common.state.ListState;
+import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.api.common.typeinfo.TypeHint;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.runtime.state.StateInitializationContext;
+import org.apache.flink.runtime.state.StateSnapshotContext;
+import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
+import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.runtime.tasks.StreamTask;
 import org.apache.flink.streaming.siddhi.control.ControlEvent;
 import org.apache.flink.streaming.siddhi.control.MetadataControlEvent;
 import org.apache.flink.streaming.siddhi.control.OperationControlEvent;
 import org.apache.flink.streaming.siddhi.schema.SiddhiStreamSchema;
 import org.apache.flink.streaming.siddhi.utils.SiddhiExecutionPlanner;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -38,16 +50,71 @@ import java.util.Set;
 public class AddRouteOperator extends AbstractStreamOperator<Tuple2<StreamRoute, Object>>
         implements OneInputStreamOperator<Tuple2<StreamRoute, Object>, Tuple2<StreamRoute, Object>> {
 
-    private Map<String, Set<String>> inputStreamToExecutionPlans = new HashMap<>();
+    private static final Logger LOGGER = LoggerFactory.getLogger(AddRouteOperator.class);
 
-    private Map<String, List<String>> executionPlanIdToPartitionKeys = new HashMap<>();
+    private transient Map<String, Set<String>> inputStreamToExecutionPlans;
 
-    private Map<String, Boolean> executionPlanEnabled = new HashMap<>();
+    private transient Map<String, List<String>> executionPlanIdToPartitionKeys;
+
+    private transient Map<String, Boolean> executionPlanEnabled;
 
     private Map<String, SiddhiStreamSchema<?>> dataStreamSchemas;
 
+    private transient ListState<Map<String,Object>> addRouteState;
+
+    private static final String ADD_ROUTE_OPERATOR_STATE = "add_route_operator_state";
+
+    private Map<String,Object> stateMap = new HashMap<>();
+
     public AddRouteOperator(Map<String, SiddhiStreamSchema<?>> dataStreamSchemas) {
         this.dataStreamSchemas = new HashMap<>(dataStreamSchemas);
+    }
+
+    @Override
+    public void setup(StreamTask<?, ?> containingTask, StreamConfig config, Output<StreamRecord<Tuple2<StreamRoute, Object>>> output) {
+        super.setup(containingTask, config, output);
+        inputStreamToExecutionPlans = new HashMap<>();
+        executionPlanIdToPartitionKeys = new HashMap<>();
+        executionPlanEnabled = new HashMap<>();
+    }
+
+    @Override
+    public void snapshotState(StateSnapshotContext context) throws Exception {
+        super.snapshotState(context);
+        addRouteState.clear();
+
+        stateMap.put("inputStreamToExecutionPlans", inputStreamToExecutionPlans);
+        stateMap.put("executionPlanIdToPartitionKeys", executionPlanIdToPartitionKeys);
+        stateMap.put("executionPlanEnabled", executionPlanEnabled);
+
+        addRouteState.add(stateMap);
+    }
+
+    public void restoreState() throws Exception{
+
+        stateMap = addRouteState.get().iterator().next();
+        inputStreamToExecutionPlans = (HashMap<String,Set<String>>)stateMap.get("inputStreamToExecutionPlans");
+        executionPlanIdToPartitionKeys = (HashMap<String,List<String>>)stateMap.get("executionPlanIdToPartitionKeys");
+        executionPlanEnabled = (HashMap<String,Boolean>)stateMap.get("executionPlanEnabled");
+
+        LOGGER.info("AddRouteOperator states restored successfully.....");
+    }
+
+    @Override
+    public void initializeState(StateInitializationContext context) throws Exception {
+        super.initializeState(context);
+        ListStateDescriptor<Map<String, Object>> descriptor =
+                new ListStateDescriptor<>(ADD_ROUTE_OPERATOR_STATE,
+                        TypeInformation.of(new TypeHint<Map<String, Object>>() {}));
+
+        if(addRouteState == null){
+            addRouteState = context.getOperatorStateStore().getUnionListState(descriptor);
+        }
+
+        if (context.isRestored()) {
+            restoreState();
+        }
+
     }
 
     @Override
@@ -61,8 +128,6 @@ public class AddRouteOperator extends AbstractStreamOperator<Tuple2<StreamRoute,
             } else if (value instanceof MetadataControlEvent) {
                 handleMetadataControlEvent((MetadataControlEvent)value);
             }
-
-            output.collect(element);
         } else {
             String inputStreamId = streamRoute.getInputStreamId();
             if (!inputStreamToExecutionPlans.containsKey(inputStreamId)) {
@@ -81,13 +146,16 @@ public class AddRouteOperator extends AbstractStreamOperator<Tuple2<StreamRoute,
                 String[] fieldNames = schema.getFieldNames();
                 Object[] row = schema.getStreamSerializer().getRow(value);
                 streamRoute.setPartitionKey(-1);
+                long partitionValue = 0;
                 for (String partitionKey : partitionKeys) {
-                    long partitionValue = 0;
                     for (int i = 0; i < fieldNames.length; ++i) {
                         if (partitionKey.equals(fieldNames[i])) {
                             partitionValue += row[i].hashCode();
                         }
                     }
+                }
+
+                if(partitionValue != 0) {
                     streamRoute.setPartitionKey(Math.abs(partitionValue));
                 }
 
@@ -100,10 +168,12 @@ public class AddRouteOperator extends AbstractStreamOperator<Tuple2<StreamRoute,
     private void handleMetadataControlEvent(MetadataControlEvent event) throws Exception {
         if (event.getDeletedExecutionPlanId() != null) {
             for (String executionPlanId : event.getDeletedExecutionPlanId()) {
-                for (String inputStreamId : inputStreamToExecutionPlans.keySet()) {
+                for (Iterator<Map.Entry<String, Set<String>>> it = inputStreamToExecutionPlans.entrySet().iterator(); it.hasNext();) {
+                    Map.Entry<String, Set<String>> entry = it.next();
+                    String inputStreamId = entry.getKey();
                     inputStreamToExecutionPlans.get(inputStreamId).remove(executionPlanId);
                     if (inputStreamToExecutionPlans.get(inputStreamId).isEmpty()) {
-                        inputStreamToExecutionPlans.remove(inputStreamId);
+                        it.remove();
                     }
                 }
                 executionPlanIdToPartitionKeys.remove(executionPlanId);
